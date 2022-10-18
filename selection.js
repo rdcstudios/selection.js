@@ -1,33 +1,109 @@
+function filter(string){
+
+    // Remove all whitepsace characters of node value to match length returned by selection
+
+    return string.replace(/[^\S\u200b]+/gm, '');
+
+}
+
 function getSelection(){
 
-    function convertTextNode(node, offset, position){
+    function findNodeWithOffset(textNodes, offset){
 
-        if(node.nodeType == Node.TEXT_NODE){
+        var characters = 0;
+
+        for(var index = 0; index < textNodes.length; index++){
+
+            var length = filter(textNodes[index].nodeValue).length;
+            characters += length;
+
+            if(offset < characters){
+
+                return {node: textNodes[index], offset: offset - (characters - length)};
+
+            }
+
+        }
+
+        return {node: textNodes[textNodes.length - 1], offset: offset - (characters - filter(textNodes[textNodes.length - 1].nodeValue).length)};
+
+    }
+
+    function convertTextNode(node, offset){
+
+        if(node == null){
+
+            return null;
+
+        }
+        else if(node.nodeType == Node.TEXT_NODE){
     
             return {node: node, offset: offset};
-    
-        }
-        else if(position == 'start'){
-    
-            var textNode = firstTextNode(node);
-            return {node: textNode, offset: 0};
     
         }
         else{
 
             var textNodes = allTextNodes(node);
-            var textNode = textNodes[textNodes.length - 1];
+            var textNode = findNodeWithOffset(textNodes, offset).node;
 
-            return {node: textNode, offset: textNode.nodeValue.length};
+            return {node: textNode, offset: offset};
 
         }
     
     }
 
+    function adjustEnd(start, end){
+
+        // Polyfill for Firefox
+
+        var characters = 0;
+        var lastNode = start.node;
+
+        while(!lastNode.isSameNode(end.node)){
+
+            characters += lastNode.nodeValue.length;
+            lastNode = nextTextNode(lastNode, document.body);
+
+            if(lastNode == null){
+
+                return end;
+
+            }
+
+        }
+
+        var calculatedLength = Math.abs(characters - start.offset + end.offset);
+        var selectionLength = filter(window.getSelection().toString()).length;
+
+        if(selectionLength != calculatedLength){
+
+            var characters = 0;
+            var offset = start.offset + selectionLength;
+
+            var textNodes = [];
+            var lastNode = start.node;
+
+            while(lastNode != null){
+
+                textNodes.push(lastNode);
+                lastNode = nextTextNode(lastNode, document.body);
+
+            }
+
+            return findNodeWithOffset(textNodes, offset);
+
+        }
+
+        return end;
+
+    }
+
     var selection = window.getSelection();
 
-    var start = convertTextNode(selection.anchorNode, selection.anchorOffset, 'start');
-    var end = convertTextNode(selection.focusNode, selection.focusOffset, 'end');
+    var start = convertTextNode(selection.anchorNode, selection.anchorOffset);
+    var end = convertTextNode(selection.focusNode, selection.focusOffset);
+
+    end = end == null ? null : adjustEnd(start, end);
 
     if(start != null && end != null){
 
@@ -57,7 +133,7 @@ function setSelection(selection, container){
 
     var oldSelection = window.getSelection();
     var range = document.createRange();
-    
+
     if(relativeSelection.start > relativeSelection.end){
 
         range.setStart(selection.end, selection.endOffset);
@@ -76,9 +152,376 @@ function setSelection(selection, container){
 
 }
 
-function collapse(){
+function getInfo(container){
+
+    function getAncestors(node, container, result){
+
+        // Get all ancestors up to container
+
+        if(typeof(result) == 'undefined'){
+
+            result = [];
+
+        }
+
+        if(node.parentNode != null && !node.parentNode.isSameNode(container) && !node.parentNode.isSameNode(document.body)){
+
+            result.push(node.parentNode);
+            return getAncestors(node.parentNode, container, result);
+
+        }
+        else{
+        
+            return result;
+
+        }
+
+    }
+
+    function nodeIndex(node, nodeList){
+
+        // Get index of text node
+
+        for(var index = 0; index < nodeList.length; index++){
+
+            if(nodeList[index].node.isSameNode(node)){
+
+                return index;
+
+            }
+
+        }
+
+        return -1;
+
+    }
+
+    function nodeRelation(node1, node2, container){
+
+        // Check if node is before or after another node
+
+        var allNodes = allTextNodes(container);
+
+        var allNodes = allNodes.map((value) => {
+
+            return {node: value};
+
+        });
+
+        var index1 = nodeIndex(node1, allNodes);
+        var index2 = nodeIndex(node2, allNodes);
+
+        if(index1 >= 0 && index2 >= 0 && index1 > index2){
+
+            return -1;
+
+        }
+        else if(index1 >= 0 && index2 >= 0 && index1 < index2){
+
+            return 1;
+
+        }
+
+        return 0;
+
+    }
+
+    function range(ancestor, textNodes, container){
+
+        // Get scope of selection
+
+        var children = allTextNodes(ancestor);
+
+        var characters = 0;
+        var total = 0;
+
+        var before = false;
+        var after = false;
+
+        for(var index = 0; index < children.length; index++){
+
+            var match = nodeIndex(children[index], textNodes);
+            var length = filter(children[index].nodeValue).length;
+
+            if(match >= 0){
+
+                characters += textNodes[match].endOffset - textNodes[match].startOffset;
+
+            }
+
+            total += length;
+
+            // Check if element starts before selection
+
+            if(index == 0 && (nodeRelation(children[index], textNodes[0].node, container) < 0 || textNodes[0].offset)){
+
+                before = true;
+
+            }
+
+            // Check if element starts after selection
+
+            if(index == children.length - 1 && nodeRelation(children[index], textNodes[textNodes.length - 1].node, container) > 0){
+
+                after = true;
+
+            }
+
+        }
+
+        var scope = characters / total;
+        var relation = 'parent';
+
+        if(before){
+
+            var relation = 'selectionEndsIn';
+
+        }
+        else if(after){
+
+            var relation = 'selectionStartsIn';
+
+        }
+
+        var result = {
+
+            scope: scope,
+            nodeCount: children.length,
+            relation: relation
+
+        };
+
+        return result;
+
+    }
+
+    function filterAncestors(ancestors, textNodes, container){
+
+        // Return highest parent that is fully included in range
+
+        var bestMatch = null;
+        var nodeCount = 0;
+
+        var excluded = [];
+        var selectionEndsIn = [];
+        var selectionStartsIn = [];
+
+        for(var index = 0; index < ancestors.length; index++){
+
+            var rangeInfo = range(ancestors[index], textNodes, container);
+
+            if(rangeInfo.scope == 1){
+
+                bestMatch = ancestors[index];
+                nodeCount = rangeInfo.nodeCount;
+
+            }
+            else{
+
+                if(rangeInfo.relation == 'parent'){
+
+                    excluded.push(ancestors[index]);
+
+                }
+                else if(rangeInfo.relation == 'selectionEndsIn'){
+
+                    selectionEndsIn.push(ancestors[index]); 
+
+                }
+                else if(rangeInfo.relation == 'selectionStartsIn'){
+
+                    selectionStartsIn.push(ancestors[index]); 
+
+                }
+
+            }
+
+        }
+
+        var result = {
+
+            element: bestMatch,
+            nodeCount: nodeCount,
+            ancestors: excluded,
+            selectionEndsIn: selectionEndsIn,
+            selectionStartsIn: selectionStartsIn
+
+        };
+
+        return result;
+
+    }
+
+    function trim(node){
+
+        // Trim node value to selection length
+
+        return filter(node.node.nodeValue).substring(node.startOffset, node.endOffset);
+
+    }
+
+    function unique(nodeList){
+
+        // Keep each element only once
+
+        nodeList = nodeList.filter((value, index, self) => {
+
+            return self.indexOf(value) === index;
+
+        });
+
+        return nodeList;
+
+    }
+
+    var selection = getSelection();
+    var textNodes = [];
+
+    if(selection != null){
+
+        var start = selection.start;
+        var end = selection.end;
+
+        // Get text nodes
+
+        var textNodes = [{
+        
+            node: start,
+            startOffset: selection.startOffset,
+            endOffset: filter(start.nodeValue).length
+        
+        }];
+
+        if(!start.isSameNode(end)){
+
+            var lastTextNode = nextTextNode(start, container);
+
+            while(lastTextNode != null){
+
+                textNodes.push({
+                    
+                    node: lastTextNode,
+                    startOffset: 0,
+                    endOffset: filter(lastTextNode.nodeValue).length
+                    
+                });
+
+                if(lastTextNode.isSameNode(end)){
+
+                    textNodes[textNodes.length - 1].endOffset = selection.endOffset;
+                    break;
+
+                }
+                else{
+
+                    lastTextNode = nextTextNode(lastTextNode, container);
+
+                }
+
+            }
+
+        }
+        else{
+
+            textNodes[0].endOffset = selection.endOffset
+
+        }
+
+        // Get content and relation to elements
+
+        var result = null;
+
+        var content = [];
+        var nodeCount = 0;
+        var elementCount = 0;
+        var ancestors = [];
+        var children = [];
+        var selectionStartsIn = [];
+        var selectionEndsIn = [];
+
+        for(var index = 0; index < textNodes.length; index++){
+
+            var allAncestors = getAncestors(textNodes[index].node, container);
+
+            if(allAncestors.length == 0){
+
+                content.push(trim(textNodes[index]));
+                nodeCount++;
+
+            }
+            else{
+
+                var element = filterAncestors(allAncestors, textNodes, container);
+
+                if(element.element == null){
+
+                    ancestors = ancestors.concat(element.ancestors);
+                    selectionStartsIn = selectionStartsIn.concat(element.selectionStartsIn);
+                    selectionEndsIn = selectionEndsIn.concat(element.selectionEndsIn);
+
+                    content.push(trim(textNodes[index]));
+                    nodeCount++;
+
+                }
+                else{
+
+                    content.push(element.element.outerHTML);
+                    children.push(element.element);
+                    
+                    nodeCount++;
+                    elementCount++;
+
+                    index += element.nodeCount - 1;
+
+                }
+
+            }
+
+        }
+
+        // Keep each element only once
+
+        ancestors = unique(ancestors);
+        children = unique(children);
+        selectionStartsIn = unique(selectionStartsIn);
+        selectionEndsIn = unique(selectionEndsIn);
+
+        result = {
+            
+            content: content.join(''),
+            nodeCount: nodeCount,
+            elementCount: elementCount,
+            ancestors: ancestors,
+            parent: ancestors.length > 0 ? ancestors[0] : null,
+            children: children,
+            selectionStartsIn: selectionStartsIn,
+            selectionEndsIn: selectionEndsIn,
+            enclosed: selectionStartsIn.length == 0 && selectionEndsIn.length == 0
+            
+        };
+
+    }
+
+    return result;
+
+}
+
+function normalize(container){
+
+    var selection = getSelection();
+    setSelection(selection, container);
+
+}
+
+function collapseToStart(){
 
     window.getSelection().collapseToStart();
+
+}
+
+function collapseToEnd(){
+
+    window.getSelection().collapseToEnd();
 
 }
 
@@ -98,6 +541,16 @@ function clear(container){
 
     range.insertNode(helperNode);
     moveTo(helperNode, container);
+
+}
+
+function insert(node){
+
+    var selection = window.getSelection();
+    var range = selection.getRangeAt(0);
+
+    range.deleteContents();
+    range.insertNode(node);
 
 }
 
@@ -138,7 +591,7 @@ function toRelativeSelection(selection, container){
 
         }
 
-        charCount += textNodes[index].nodeValue.length;
+        charCount += filter(textNodes[index].nodeValue).length;
 
     }
 
@@ -224,14 +677,14 @@ function adjacentTextNode(lastNode, container, direction){
 
         for(var index = startIndex; compare(index, endIndex); index += increment){
 
-            if(childNodes[index].nodeType == Node.TEXT_NODE && childNodes[index].nodeValue.length > 0){
+            if(childNodes[index].nodeType == Node.TEXT_NODE){
 
                 return childNodes[index];
 
             }
             else{
 
-                var match = searchDescendants(childNodes[index]);
+                var match = searchDescendants(childNodes[index], direction);
 
                 if(match != null){
 
@@ -262,7 +715,7 @@ function adjacentTextNode(lastNode, container, direction){
 
         // Search sibling
 
-        if(sibling.nodeType == Node.TEXT_NODE && sibling.nodeValue.length > 0){
+        if(sibling.nodeType == Node.TEXT_NODE){
 
             // Sibling is text node
 
@@ -317,7 +770,7 @@ function allTextNodes(container){
     while(lastTextNode != null){
 
         textNodes.push(lastTextNode);
-        lastTextNode = nextTextNode(lastTextNode);
+        lastTextNode = nextTextNode(lastTextNode, container);
 
     }
 
@@ -325,41 +778,41 @@ function allTextNodes(container){
 
 }
 
-function move(characters, container){
-
-    var selectionBefore = getSelection();
-    var selectionAfter = shift(characters, container, 'start', {...selectionBefore});
-
-    // Collapse
-
-    selectionAfter.end = selectionAfter.start;
-    selectionAfter.endOffset = selectionAfter.startOffset;
-
-    setSelection(selectionAfter, container);
-
-    return compareSelection(selectionBefore, selectionAfter);
-
-}
-
 function moveStart(characters, container){
 
     var selectionBefore = getSelection();
-    var selectionAfter = shift(characters, container, 'start', {...selectionBefore});
 
-    setSelection(selectionAfter, container);
+    if(selectionBefore == null){
 
-    return compareSelection(selectionBefore, selectionAfter);
+        return false;
+
+    }
+    else{
+
+        var selectionAfter = shift(characters, container, 'start', {...selectionBefore});
+        setSelection(selectionAfter, container);
+        return compareSelection(selectionBefore, selectionAfter);
+
+    }
 
 }
 
 function moveEnd(characters, container){
 
     var selectionBefore = getSelection();
-    var selectionAfter = shift(characters, container, 'end', {...selectionBefore});
 
-    setSelection(selectionAfter, container);
+    if(selectionBefore == null){
 
-    return compareSelection(selectionBefore, selectionAfter);
+        return false;
+
+    }
+    else{
+
+        var selectionAfter = shift(characters, container, 'end', {...selectionBefore});
+        setSelection(selectionAfter, container);
+        return compareSelection(selectionBefore, selectionAfter);
+
+    }
 
 }
 
@@ -434,15 +887,66 @@ function compareSelection(selection1, selection2){
 
 }
 
-function moveTo(node, container){
+function selectAll(node, container){
 
     if(node.nodeType == Node.ELEMENT_NODE){
 
-        var textNodes = allTextNodes(container);
+        var textNodes = [node];
+
+    }
+    else{
+
+        var textNodes = allTextNodes(node);
+
+    }
+
+    if(textNodes.length > 0){
+
+        var selection = {
+
+            start: textNodes[0],
+            startOffset: 0,
+            end: textNodes[textNodes.length - 1],
+            endOffset: filter(textNodes[textNodes.length - 1].nodeValue).length
+
+        };
+
+        setSelection(selection, container);
+
+    }
+
+}
+
+function moveToStartOfNode(node, container){
+
+    moveTo(node, container, 'start');
+
+}
+
+function moveToEndOfNode(node, container){
+
+    moveTo(node, container, 'end');
+
+}
+
+function moveTo(node, container, direction){
+
+    if(node.nodeType == Node.ELEMENT_NODE){
+
+        var textNodes = allTextNodes(node);
 
         if(textNodes.length > 0){
 
-            var textNode = textNodes[textNodes.length - 1];
+            if(direction == 'start'){
+
+                var textNode = textNodes[0];
+
+            }
+            else{
+
+                var textNode = textNodes[textNodes.length - 1];
+
+            }
 
         }
 
@@ -455,12 +959,14 @@ function moveTo(node, container){
 
     if(typeof(textNode) != 'undefined'){
 
+        var offset = direction == 'start' ? 0 : filter(textNode.nodeValue).length;
+
         var selection = {
 
             start: textNode,
-            startOffset: textNode.nodeValue.length,
+            startOffset: offset,
             end: textNode,
-            endOffset: textNode.nodeValue.length
+            endOffset: offset
 
         };
 
@@ -554,13 +1060,13 @@ function substring(characters, container, direction){
 
 function selectedElementStart(selector, container){
 
-    return selectedElement(selector, container, window.getSelection().anchorNode);
+    return selectedElement(selector, container, getSelection().start);
 
 }
 
 function selectedElementEnd(selector, container){
 
-    return selectedElement(selector, container, window.getSelection().focusNode);
+    return selectedElement(selector, container, getSelection().end);
 
 }
 
@@ -589,32 +1095,342 @@ function selectedElement(selector, container, element){
 
 }
 
-function elementBefore(selector, container){
+function startOfLine(selector, container){
 
-    var oldSelection = getSelection();
-
-    collapse(container);
-    moveStart(-1, container);
-    moveEnd(1, container);
-    
     var selection = getSelection();
+    var lastTextNode = null;
 
-    if(selection.start.isSameNode(selection.end)){
+    if(selection.startOffset == 0){
 
-        var result = selectedElement(selector, container, selection.start);
-
-    }
-    else{
-
-        var result = selectedElement(selector, container, nextTextNode(selection.start, container));
+        lastTextNode = selection.start;
 
     }
 
-    // Reset selectin
+    if(lastTextNode != null){
 
-    setSelection(oldSelection, container);
+        // Ignore empty nodes
+
+        while(lastTextNode.previousSibling != null){
+
+            if(lastTextNode.previousSibling.nodeType == Node.TEXT_NODE && lastTextNode.previousSibling.nodeValue == ''){
+
+                lastTextNode = lastTextNode.previousSibling;
+
+            }
+            else{
+
+                break;
+
+            }
+
+        }
+
+        var previousSibling = lastTextNode.previousSibling;
+
+        if(previousSibling == null){
+
+            if(lastTextNode.parentNode != null && (lastTextNode.parentNode.matches(selector) || lastTextNode.parentNode.isSameNode(container))){
+
+                // Start of element
+
+                return true;
+
+            }
+
+        }
+        else if(previousSibling.nodeType == Node.ELEMENT_NODE && previousSibling.matches(selector)){
+
+            // In between elements
+
+            return true;
+
+        }
+
+    }
+
+    return false;
+
+}
+
+function endOfLine(selector, container){
+
+    var selection = getSelection();
+    var lastTextNode = null;
+
+    if(selection.endOffset == filter(selection.end.nodeValue).length){
+
+        lastTextNode = selection.end;
+
+    }
+    else if(selection.endOffset == 0){
+
+        lastTextNode = previousTextNode(selection.end, container);
+        
+    }
+
+    if(lastTextNode != null){
+
+        // Ignore empty nodes
+
+        while(lastTextNode.nextSibling != null){
+
+            if(lastTextNode.nextSibling.nodeType == Node.TEXT_NODE && lastTextNode.nextSibling.nodeValue == ''){
+
+                lastTextNode = lastTextNode.nextSibling;
+
+            }
+            else{
+
+                break;
+
+            }
+
+        }
+
+        var nextSibling = lastTextNode.nextSibling;
+
+        if(nextSibling == null){
+
+            if(lastTextNode.parentNode != null && (lastTextNode.parentNode.matches(selector) || lastTextNode.parentNode.isSameNode(container))){
+
+                // End of element
+
+                return true;
+
+            }
+
+        }
+        else if(nextSibling.nodeType == Node.ELEMENT_NODE && nextSibling.matches(selector)){
+
+            // In between elements
+
+            return true;
+
+        }
+
+    }
+
+    return false;
+
+}
+
+function readLine(selector){
+
+    var selection = getSelection();
+    var result = '';
+
+    if(selection != null){
+
+        // Get preceding siblings
+        
+        var lastNode = selection.end;
+        var nodes = [selection.end];
+
+        while(lastNode.previousSibling != null && !(lastNode.previousSibling.nodeType == Node.ELEMENT_NODE && lastNode.previousSibling.matches(selector))){
+
+            lastNode = lastNode.previousSibling;
+            nodes.unshift(lastNode);
+
+        }
+
+        // Get succeeding siblings
+        
+        lastNode = selection.end;
+
+        while(lastNode.nextSibling != null && !(lastNode.nextSibling.nodeType == Node.ELEMENT_NODE && lastNode.nextSibling.matches(selector))){
+
+            lastNode = lastNode.nextSibling;
+            nodes.push(lastNode);
+
+        }
+
+        // Get values
+
+        var values = nodes.map((node) => {
+
+            if(node.nodeType == Node.ELEMENT_NODE){
+
+                return filter(node.innerText);
+
+            }
+            
+            return filter(node.nodeValue);
+
+        });
+
+        result = values.join('');
+
+    }
 
     return result;
+
+}
+
+function moveStartToNextNode(container){
+
+    var selection = getSelection();
+
+    if(selection.startOffset == filter(selection.start.nodeValue).length){
+
+        return moveToNode(container, selection, 'start', 'next');
+
+    }
+
+    return false;
+
+}
+
+function moveStartToPreviousNode(container){
+
+    var selection = getSelection();
+
+    if(selection.startOffset == 0){
+
+        return moveToNode(container, selection, 'start', 'previous');
+
+    }
+
+    return false;
+
+}
+
+function moveEndToNextNode(container){
+
+    var selection = getSelection();
+
+    if(selection.endOffset == filter(selection.end.nodeValue).length){
+
+        return moveToNode(container, selection, 'end', 'next');
+
+    }
+
+    return false;
+
+}
+
+function moveEndToPreviousNode(container){
+
+    var selection = getSelection();
+
+    if(selection.endOffset == 0){
+
+        return moveToNode(container, selection, 'end', 'previous');
+
+    }
+
+    return false;
+
+}
+
+function moveToNode(container, selection, position, direction){
+
+    var lastTextNode = selection[position];
+
+    while(lastTextNode != null){
+
+        if(direction == 'next'){
+
+            lastTextNode = nextTextNode(lastTextNode, container);
+
+        }
+        else{
+
+            lastTextNode = previousTextNode(lastTextNode, container);
+
+        }
+
+        if(lastTextNode == null || lastTextNode.nodeValue != ''){
+
+            break;
+
+        }
+
+    }
+
+    if(lastTextNode != null){
+
+        var oldSelection = window.getSelection();
+        var range = oldSelection.getRangeAt(0);
+
+        var value = filter(lastTextNode.nodeValue);
+
+        if(direction == 'next'){
+
+            if(position == 'start'){
+
+                if(value.length > 0){
+
+                    // Prevents Safari bug
+
+                    range.setStart(lastTextNode, 1);
+                    oldSelection.removeAllRanges();
+                    oldSelection.addRange(range);
+
+                }
+
+                range.setStart(lastTextNode, 0);
+
+            }
+            else if(position == 'end'){
+
+                if(value.length > 0){
+
+                    // Prevents Safari bug
+
+                    range.setEnd(lastTextNode, 1);
+                    oldSelection.removeAllRanges();
+                    oldSelection.addRange(range);
+
+                }
+
+                range.setEnd(lastTextNode, 0);
+
+            }
+
+        }
+        else{
+
+            if(position == 'start'){
+
+                if(value.length - 1 >= 0){
+
+                    // Prevents Safari bug
+
+                    range.setStart(lastTextNode, value.length - 1);
+                    oldSelection.removeAllRanges();
+                    oldSelection.addRange(range);
+
+                }
+
+                range.setStart(lastTextNode, value.length);
+
+            }
+            else if(position == 'end'){
+
+                if(value.length - 1 >= 0){
+
+                    // Prevents Safari bug
+
+                    range.setEnd(lastTextNode, value.length - 1);
+                    oldSelection.removeAllRanges();
+                    oldSelection.addRange(range);
+
+                }
+
+                range.setEnd(lastTextNode, value.length);
+
+            }
+
+        }
+
+        oldSelection.removeAllRanges();
+        oldSelection.addRange(range);
+
+        return true;
+
+    }
+
+    return false;
 
 }
 
@@ -633,4 +1449,4 @@ function onNextChange(callback){
 
 }
 
-export {collapse, isCollapsed, clear, relativeTo, previousTextNode, nextTextNode, move, moveStart, moveEnd, moveTo, substringStart, substringEnd, selectedElementStart, selectedElementEnd, elementBefore, onNextChange};
+export {filter, getSelection, setSelection, getInfo, normalize, collapseToStart, collapseToEnd, isCollapsed, clear, insert, relativeTo, previousTextNode, nextTextNode, moveStart, moveEnd, selectAll, moveToStartOfNode, moveToEndOfNode, substringStart, substringEnd, selectedElementStart, selectedElementEnd, startOfLine, endOfLine, readLine, moveStartToNextNode, moveStartToPreviousNode, moveEndToNextNode, moveEndToPreviousNode, onNextChange};
